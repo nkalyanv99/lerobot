@@ -306,15 +306,16 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
         updates = []  # list of "updates" to apply to the item retrieved from hf_dataset (w/o camera features)
 
         # Get episode index from the item
-        ep_idx = item["episode_index"]
+        ep_idx = int(item["episode_index"])
 
-        # "timestamp" restarts from 0 for each episode, whereas we need a global timestep within the single .mp4 file (given by index/fps)
-        current_ts = item["index"] / self.fps
+        # Keep timestamps episode-local, and shift them per-video in `_query_videos`.
+        current_ts = item["timestamp"].item()
 
         episode_boundaries_ts = {
             key: (
-                self.meta.episodes[ep_idx][f"videos/{key}/from_timestamp"],
-                self.meta.episodes[ep_idx][f"videos/{key}/to_timestamp"],
+                0.0,
+                self.meta.episodes[ep_idx][f"videos/{key}/to_timestamp"]
+                - self.meta.episodes[ep_idx][f"videos/{key}/from_timestamp"],
             )
             for key in self.meta.video_keys
         }
@@ -387,10 +388,15 @@ class StreamingLeRobotDataset(torch.utils.data.IterableDataset):
 
         item = {}
         for video_key, query_ts in query_timestamps.items():
+            # Episodes may be concatenated in video files. Shift episode-local timestamps
+            # to file-local timestamps before querying the decoder.
+            from_timestamp = self.meta.episodes[ep_idx][f"videos/{video_key}/from_timestamp"]
+            shifted_query_ts = [from_timestamp + ts for ts in query_ts]
+
             root = self.meta.url_root if self.streaming and not self.streaming_from_local else self.root
             video_path = f"{root}/{self.meta.get_video_file_path(ep_idx, video_key)}"
             frames = decode_video_frames_torchcodec(
-                video_path, query_ts, self.tolerance_s, decoder_cache=self.video_decoder_cache
+                video_path, shifted_query_ts, self.tolerance_s, decoder_cache=self.video_decoder_cache
             )
 
             item[video_key] = frames.squeeze(0) if len(query_ts) == 1 else frames

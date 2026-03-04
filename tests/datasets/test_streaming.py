@@ -16,6 +16,7 @@
 import numpy as np
 import pytest
 import torch
+from datasets import Dataset
 
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.utils import safe_shard
@@ -111,6 +112,84 @@ def test_single_frame_consistency(tmp_path, lerobot_dataset_factory):
         assert all(t[1] for t in key_checks), (
             f"Checking {list(filter(lambda t: not t[1], key_checks))[0][0]} left and right were found different (frame_idx: {frame_idx})"
         )
+
+
+def test_streaming_video_queries_use_episode_local_timestamps(
+    tmp_path,
+    lerobot_dataset_factory,
+    info_factory,
+    tasks_factory,
+    episodes_factory,
+    monkeypatch,
+):
+    local_path = tmp_path / "test"
+    repo_id = f"{DUMMY_REPO_ID}-streaming-ts"
+    episode_lengths = [30, 10]
+    total_episodes = len(episode_lengths)
+    total_frames = sum(episode_lengths)
+
+    info = info_factory(total_episodes=total_episodes, total_frames=total_frames, total_tasks=1)
+    tasks = tasks_factory(total_tasks=1)
+    video_keys = [key for key, ft in info["features"].items() if ft["dtype"] == "video"]
+    episodes = episodes_factory(
+        features=info["features"],
+        fps=info["fps"],
+        total_episodes=total_episodes,
+        total_frames=total_frames,
+        video_keys=video_keys,
+        tasks=tasks,
+    )
+    episodes_dict = episodes.to_dict()
+
+    max_ts_by_path = {}
+    start_idx = 0
+    for ep_idx, length in enumerate(episode_lengths):
+        end_idx = start_idx + length
+        episodes_dict["length"][ep_idx] = length
+        episodes_dict["dataset_from_index"][ep_idx] = start_idx
+        episodes_dict["dataset_to_index"][ep_idx] = end_idx
+        episodes_dict["meta/episodes/file_index"][ep_idx] = ep_idx
+
+        for video_key in video_keys:
+            episodes_dict[f"videos/{video_key}/file_index"][ep_idx] = ep_idx
+            episodes_dict[f"videos/{video_key}/from_timestamp"][ep_idx] = 0.0
+            episodes_dict[f"videos/{video_key}/to_timestamp"][ep_idx] = length / info["fps"]
+
+            video_rel_path = info["video_path"].format(video_key=video_key, chunk_index=0, file_index=ep_idx)
+            max_ts_by_path[str(local_path / video_rel_path)] = length / info["fps"]
+
+        start_idx = end_idx
+
+    lerobot_dataset_factory(
+        root=local_path,
+        repo_id=repo_id,
+        info=info,
+        tasks=tasks,
+        episodes_metadata=Dataset.from_dict(episodes_dict),
+    )
+
+    def fake_decode(
+        video_path,
+        timestamps,
+        tolerance_s,
+        log_loaded_timestamps=False,
+        decoder_cache=None,
+    ):
+        del tolerance_s, log_loaded_timestamps, decoder_cache
+        assert max(timestamps) <= max_ts_by_path[str(video_path)] + 1e-6
+        return torch.zeros((len(timestamps), 3, 64, 96), dtype=torch.float32)
+
+    monkeypatch.setattr(
+        "lerobot.datasets.streaming_dataset.decode_video_frames_torchcodec",
+        fake_decode,
+    )
+
+    streaming_ds = StreamingLeRobotDataset(
+        repo_id=repo_id, root=local_path, shuffle=False, buffer_size=1, max_num_shards=1
+    )
+    it = iter(streaming_ds)
+    for _ in range(total_frames):
+        next(it)
 
 
 @pytest.mark.parametrize(
