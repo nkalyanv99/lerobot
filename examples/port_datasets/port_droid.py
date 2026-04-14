@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import tensorflow_datasets as tfds
 
 from lerobot.datasets import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.utils.utils import get_elapsed_time_in_days_hours_minutes_seconds
@@ -305,6 +304,46 @@ def generate_lerobot_frames(tf_episode):
         yield frame
 
 
+def is_tfds_builder_dir(path: Path) -> bool:
+    return (path / "dataset_info.json").is_file() and (path / "features.json").is_file()
+
+
+def resolve_tfds_builder_dir(raw_dir: Path) -> Path:
+    if not raw_dir.is_dir():
+        raise ValueError(f"`--raw-dir` does not exist or is not a directory: {raw_dir}")
+
+    if is_tfds_builder_dir(raw_dir):
+        return raw_dir
+
+    version_dirs = sorted(path for path in raw_dir.iterdir() if path.is_dir() and is_tfds_builder_dir(path))
+    if len(version_dirs) == 1:
+        return version_dirs[0]
+    if len(version_dirs) > 1:
+        versions = ", ".join(path.name for path in version_dirs)
+        raise ValueError(
+            f"`--raw-dir` points to {raw_dir}, which contains multiple DROID versions ({versions}). "
+            "Pass the version directory instead."
+        )
+
+    raise ValueError(
+        f"Could not find a TFDS export in {raw_dir}. Expected `--raw-dir` to point to the DROID version directory "
+        "(containing `dataset_info.json`, `features.json`, and `*.tfrecord*`) or its parent dataset directory."
+    )
+
+
+def load_droid_builder(raw_dir: Path):
+    try:
+        import tensorflow_datasets as tfds
+    except ImportError as exc:
+        raise ImportError(
+            "DROID porting requires `tensorflow` and `tensorflow_datasets`. "
+            "Install them with `pip install tensorflow tensorflow_datasets`."
+        ) from exc
+
+    builder_dir = resolve_tfds_builder_dir(raw_dir)
+    return tfds.builder_from_directory(str(builder_dir))
+
+
 def port_droid(
     raw_dir: Path,
     repo_id: str,
@@ -312,11 +351,7 @@ def port_droid(
     num_shards: int | None = None,
     shard_index: int | None = None,
 ):
-    dataset_name = raw_dir.parent.name
-    version = raw_dir.name
-    data_dir = raw_dir.parent.parent
-
-    builder = tfds.builder(f"{dataset_name}/{version}", data_dir=data_dir, version="")
+    builder = load_droid_builder(raw_dir)
 
     if num_shards is not None:
         tfds_num_shards = builder.info.splits["train"].num_shards
@@ -398,7 +433,7 @@ def main():
         "--raw-dir",
         type=Path,
         required=True,
-        help="Directory containing input raw datasets (e.g. `path/to/dataset` or `path/to/dataset/version).",
+        help="Path to the downloaded DROID TFDS export (e.g. `path/to/droid/1.0.1` or `path/to/droid`).",
     )
     parser.add_argument(
         "--repo-id",

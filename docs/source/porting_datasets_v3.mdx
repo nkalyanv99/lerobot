@@ -133,11 +133,23 @@ Download DROID from Google Cloud Storage using `gsutil`:
 # https://cloud.google.com/sdk/docs/install
 
 # Download the full RLDS dataset (1.7TB)
-gsutil -m cp -r gs://gresearch/robotics/droid/1.0.1 /your/data/
+mkdir -p /your/data/droid
+gsutil -m cp -r gs://gresearch/robotics/droid/1.0.1 /your/data/droid/
 
 # Or download just the 100-episode sample (2GB) for testing
 gsutil -m cp -r gs://gresearch/robotics/droid_100 /your/data/
 ```
+
+The path passed to `--raw-dir` should resolve to the downloaded TFDS export, for example:
+
+```text
+/your/data/droid/1.0.1/
+├── dataset_info.json
+├── features.json
+└── droid-train.tfrecord-00000-of-02048
+```
+
+You can also point `--raw-dir` at `/your/data/droid` when it contains exactly one downloaded version.
 
 > [!WARNING]
 > Large datasets require substantial time and storage:
